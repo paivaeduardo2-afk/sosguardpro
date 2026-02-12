@@ -1,0 +1,8 @@
+{
+  "name": "SOS Guard Pro",
+  "description": "Sistema de alerta de emergência com captura de localização e evidências fotográficas.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera"
+  ]
+}
