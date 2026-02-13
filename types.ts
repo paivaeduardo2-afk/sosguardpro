@@ -1,4 +1,11 @@
 
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  photoUrl?: string;
+}
+
 export interface EmergencyContact {
   id: string;
   name: string;
@@ -10,9 +17,10 @@ export interface AppSettings {
   bloodType: string;
   medications: string;
   allergies: string;
-  isOrganDonor: string; // "Sim", "Não" ou ""
+  isOrganDonor: string;
   message: string;
   contacts: EmergencyContact[];
+  groupLink?: string;
 }
 
 export interface LocationData {
