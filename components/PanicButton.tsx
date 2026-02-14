@@ -65,13 +65,18 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
       setTimeout(() => {
         stopStream();
         resolve(null);
-      }, 4000)
+      }, 5000) // Aumentado para 5s para WebViews lentas
     );
 
     const capturePromise = (async () => {
       try {
+        // Solicitação explícita de áudio false para evitar conflitos de permissão em Android
         activeStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { facingMode: facingMode, width: { ideal: 640 }, height: { ideal: 480 } }, 
+          video: { 
+            facingMode: { ideal: facingMode },
+            width: { ideal: 640 }, 
+            height: { ideal: 480 } 
+          }, 
           audio: false 
         });
         
@@ -84,21 +89,24 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
             videoRef.current.onloadedmetadata = () => resolve(true);
             if (videoRef.current.readyState >= 2) resolve(true);
           });
+          
+          // Importante para Android: dar um pequeno tempo para o hardware da câmera focar
           await videoRef.current.play();
-          await new Promise(r => setTimeout(r, 800));
+          await new Promise(r => setTimeout(r, 1200));
 
           const context = canvasRef.current.getContext('2d');
           if (context && videoRef.current) {
             canvasRef.current.width = videoRef.current.videoWidth || 640;
             canvasRef.current.height = videoRef.current.videoHeight || 480;
             context.drawImage(videoRef.current, 0, 0);
-            const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.6);
+            const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.5); // Qualidade reduzida para facilitar envio
             stopStream();
             return dataUrl;
           }
         }
         return null;
       } catch (err) {
+        console.error("Erro ao acessar câmera:", err);
         setCameraPermission('denied');
         stopStream();
         return null;
@@ -117,6 +125,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     if (settings.userName) medicalInfo += `\n👤 Nome: ${settings.userName}`;
     if (settings.bloodType) medicalInfo += `\n🩸 Sangue: ${settings.bloodType}`;
     if (settings.allergies) medicalInfo += `\n⚠️ Alergias: ${settings.allergies}`;
+    if (settings.medications) medicalInfo += `\n💊 Remédios: ${settings.medications}`;
 
     return `🚨 *SOS GUARD - EMERGÊNCIA* 🚨\n\n${settings.message}\n${medicalInfo}\n\n📍 *LOCALIZAÇÃO*:\n${googleMapsUrl}`;
   };
@@ -125,14 +134,13 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     if (!settings.groupLink) return;
     
     const text = getEmergencyText();
-    const groupUrl = `${settings.groupLink}${settings.groupLink.includes('?') ? '&' : '?'}text=${encodeURIComponent(text)}`;
-    
     const { front, back } = capturedPhotos;
     const files: File[] = [];
     if (front) files.push(dataURLtoFile(front, 'selfie_sos.jpg'));
     if (back) files.push(dataURLtoFile(back, 'ambiente_sos.jpg'));
 
-    if (navigator.share && files.length > 0 && navigator.canShare && navigator.canShare({ files })) {
+    // Tentar o Share API primeiro (Melhor para Android anexar fotos)
+    if (navigator.share && navigator.canShare && navigator.canShare({ files })) {
       try {
         await navigator.share({
           title: 'SOS GRUPO',
@@ -140,10 +148,14 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
           files: files
         });
         return;
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Share API falhou ou cancelado", e);
+      }
     }
     
-    window.open(groupUrl, '_blank');
+    // Fallback: Link do grupo (WhatsApp Web/App)
+    const groupUrl = `${settings.groupLink}${settings.groupLink.includes('?') ? '&' : '?'}text=${encodeURIComponent(text)}`;
+    window.location.href = groupUrl; // Usar location.href ao invés de window.open para WebViews
   };
 
   const handleSendFullEmergency = async (contact: EmergencyContact) => {
@@ -154,25 +166,42 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     if (front) files.push(dataURLtoFile(front, 'sos_selfie.jpg'));
     if (back) files.push(dataURLtoFile(back, 'sos_ambiente.jpg'));
 
-    const shareData: any = {
-      title: 'SOS EMERGÊNCIA',
-      text: text,
-    };
-
-    if (files.length > 0 && navigator.canShare && navigator.canShare({ files })) {
-      shareData.files = files;
+    if (navigator.share && navigator.canShare && navigator.canShare({ files })) {
+      try {
+        await navigator.share({
+          title: 'SOS EMERGÊNCIA',
+          text: text,
+          files: files
+        });
+        return;
+      } catch (err) {
+        if ((err as Error).name !== 'AbortError') {
+          handleDirectWhatsApp(contact);
+        }
+      }
+    } else {
+      handleDirectWhatsApp(contact);
     }
+  };
 
+  const handleDirectWhatsApp = (contact: EmergencyContact) => {
+    const phone = formatPhoneForWhatsApp(contact.phone);
+    const text = encodeURIComponent(getEmergencyText());
+    
+    // Em Android WebView, links whatsapp:// funcionam melhor se o app estiver instalado
+    const whatsappUrl = `whatsapp://send?phone=${phone}&text=${text}`;
+    const fallbackUrl = `https://wa.me/${phone}?text=${text}`;
+    
     try {
-      if (navigator.share) {
-        await navigator.share(shareData);
-      } else {
-        handleSMSFallback(contact);
-      }
-    } catch (err) {
-      if ((err as Error).name !== 'AbortError') {
-        handleSMSFallback(contact);
-      }
+      window.location.href = whatsappUrl;
+      // Pequeno timeout para tentar o fallback caso o intent nativo não dispare
+      setTimeout(() => {
+        if (document.hasFocus()) {
+          window.location.href = fallbackUrl;
+        }
+      }, 1500);
+    } catch (e) {
+      window.location.href = fallbackUrl;
     }
   };
 
@@ -185,12 +214,6 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     window.location.href = smsUri;
   };
 
-  const handleDirectWhatsApp = (contact: EmergencyContact) => {
-    const phone = formatPhoneForWhatsApp(contact.phone);
-    const text = encodeURIComponent(getEmergencyText());
-    window.open(`https://wa.me/${phone}?text=${text}`, '_blank');
-  };
-
   const handleSOS = async () => {
     if (validContacts.length === 0 && !settings.groupLink) {
       alert("⚠️ Adicione contatos ou um link de grupo nos ajustes primeiro.");
@@ -200,15 +223,21 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     if (navigator.vibrate) navigator.vibrate([500, 100, 500, 100, 500]);
 
     setIsSending(true);
-    setLastAction("Capturando sua imagem...");
-    const front = await capturePhotoWithTimeout('user');
-    setCapturedPhotos(prev => ({ ...prev, front }));
     
-    await new Promise(r => setTimeout(r, 600));
-    
-    setLastAction("Registrando ambiente...");
-    const back = await capturePhotoWithTimeout('environment');
-    setCapturedPhotos(prev => ({ ...prev, back }));
+    try {
+      setLastAction("Capturando sua imagem...");
+      const front = await capturePhotoWithTimeout('user');
+      setCapturedPhotos(prev => ({ ...prev, front }));
+      
+      await new Promise(r => setTimeout(r, 800));
+      
+      setLastAction("Registrando ambiente...");
+      const back = await capturePhotoWithTimeout('environment');
+      setCapturedPhotos(prev => ({ ...prev, back }));
+    } catch (e) {
+      console.error("Erro durante captura:", e);
+      setLastAction("Erro ao capturar imagens.");
+    }
 
     setIsSending(false);
     setShowWhatsAppFollowup(true);
@@ -240,7 +269,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
           >
             {isSending ? (
               <div className="flex flex-col items-center animate-pulse">
-                <span className="text-white text-xs font-black uppercase tracking-widest">Ativando...</span>
+                <span className="text-white text-xs font-black uppercase tracking-widest">Ativando Câmera...</span>
               </div>
             ) : (
               <>
@@ -291,19 +320,13 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
                       onClick={() => handleSendFullEmergency(contact)}
                       className="w-full flex items-center justify-center gap-3 py-5 bg-green-500 hover:bg-green-600 text-white rounded-2xl transition-all shadow-lg active:scale-95 border-b-4 border-green-700"
                     >
-                      <span className="font-black text-2xl uppercase tracking-tighter">ENVIAR</span>
+                      <span className="font-black text-2xl uppercase tracking-tighter">ENVIAR WHATSAPP</span>
                     </button>
                     
                     <div className="flex flex-col gap-1 items-center">
                       <button 
-                        onClick={() => handleDirectWhatsApp(contact)}
-                        className="text-[10px] text-green-900 font-bold uppercase tracking-widest flex items-center gap-1 hover:underline"
-                      >
-                        Conversa no WhatsApp
-                      </button>
-                      <button 
                         onClick={() => handleSMSFallback(contact)}
-                        className="text-[9px] text-slate-600 font-black uppercase tracking-widest hover:text-red-500 transition-colors"
+                        className="text-[9px] text-slate-600 font-black uppercase tracking-widest hover:text-red-500 transition-colors py-2"
                       >
                         Enviar via SMS direto
                       </button>
@@ -319,7 +342,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
               {capturedPhotos.front ? (
                 <img src={capturedPhotos.front} className="w-full h-full object-cover" alt="Selfie" />
               ) : (
-                <div className="w-full h-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-400 uppercase text-center p-2">Sem Selfie</div>
+                <div className="w-full h-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-500 uppercase text-center p-2">Sem Foto (Verificar Permissões)</div>
               )}
               <div className="absolute bottom-2 left-2 bg-black/70 backdrop-blur-md px-2 py-1 rounded-lg text-[9px] text-white font-black uppercase tracking-tighter">Sua Selfie</div>
             </div>
@@ -327,7 +350,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
               {capturedPhotos.back ? (
                 <img src={capturedPhotos.back} className="w-full h-full object-cover" alt="Ambiente" />
               ) : (
-                <div className="w-full h-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-400 uppercase text-center p-2">Sem Ambiente</div>
+                <div className="w-full h-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-500 uppercase text-center p-2">Sem Foto (Verificar Permissões)</div>
               )}
               <div className="absolute bottom-2 left-2 bg-black/70 backdrop-blur-md px-2 py-1 rounded-lg text-[9px] text-white font-black uppercase tracking-tighter">Ambiente</div>
             </div>
