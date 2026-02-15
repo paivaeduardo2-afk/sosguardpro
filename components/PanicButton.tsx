@@ -11,26 +11,14 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
   const [isSending, setIsSending] = useState(false);
   const [lastAction, setLastAction] = useState<string | null>(null);
   const [showWhatsAppFollowup, setShowWhatsAppFollowup] = useState(false);
+  const [isSuccess, setIsSuccess] = useState(false);
   const [capturedPhotos, setCapturedPhotos] = useState<{front: string | null, back: string | null}>({ front: null, back: null });
-  const [cameraPermission, setCameraPermission] = useState<'granted' | 'prompt' | 'denied'>('prompt');
+  const [cameraError, setCameraError] = useState<string | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const validContacts = settings.contacts.filter(c => c.phone.trim().length > 0).slice(0, 5);
-
-  useEffect(() => {
-    if (navigator.permissions && (navigator.permissions as any).query) {
-      navigator.permissions.query({ name: 'camera' as any })
-        .then((result) => {
-          setCameraPermission(result.state as any);
-          result.onchange = () => setCameraPermission(result.state as any);
-        })
-        .catch(() => {
-          setCameraPermission('prompt');
-        });
-    }
-  }, []);
 
   const dataURLtoFile = (dataurl: string, filename: string) => {
     const arr = dataurl.split(',');
@@ -61,59 +49,44 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
       }
     };
 
-    const timeoutPromise = new Promise<null>((resolve) => 
-      setTimeout(() => {
-        stopStream();
-        resolve(null);
-      }, 5000) // Aumentado para 5s para WebViews lentas
-    );
-
-    const capturePromise = (async () => {
-      try {
-        // Solicitação explícita de áudio false para evitar conflitos de permissão em Android
-        activeStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { 
-            facingMode: { ideal: facingMode },
-            width: { ideal: 640 }, 
-            height: { ideal: 480 } 
-          }, 
-          audio: false 
+    try {
+      activeStream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: { ideal: facingMode },
+          width: { ideal: 640 }, 
+          height: { ideal: 480 } 
+        }, 
+        audio: false 
+      });
+      
+      if (videoRef.current && canvasRef.current && activeStream) {
+        videoRef.current.srcObject = activeStream;
+        await new Promise((resolve) => {
+          if (!videoRef.current) return resolve(false);
+          videoRef.current.onloadedmetadata = () => resolve(true);
+          if (videoRef.current.readyState >= 2) resolve(true);
         });
         
-        setCameraPermission('granted');
+        await videoRef.current.play();
+        await new Promise(r => setTimeout(r, 1000)); // Tempo para foco
 
-        if (videoRef.current && canvasRef.current && activeStream) {
-          videoRef.current.srcObject = activeStream;
-          await new Promise((resolve) => {
-            if (!videoRef.current) return resolve(false);
-            videoRef.current.onloadedmetadata = () => resolve(true);
-            if (videoRef.current.readyState >= 2) resolve(true);
-          });
-          
-          // Importante para Android: dar um pequeno tempo para o hardware da câmera focar
-          await videoRef.current.play();
-          await new Promise(r => setTimeout(r, 1200));
-
-          const context = canvasRef.current.getContext('2d');
-          if (context && videoRef.current) {
-            canvasRef.current.width = videoRef.current.videoWidth || 640;
-            canvasRef.current.height = videoRef.current.videoHeight || 480;
-            context.drawImage(videoRef.current, 0, 0);
-            const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.5); // Qualidade reduzida para facilitar envio
-            stopStream();
-            return dataUrl;
-          }
+        const context = canvasRef.current.getContext('2d');
+        if (context && videoRef.current) {
+          canvasRef.current.width = videoRef.current.videoWidth || 640;
+          canvasRef.current.height = videoRef.current.videoHeight || 480;
+          context.drawImage(videoRef.current, 0, 0);
+          const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.6);
+          stopStream();
+          return dataUrl;
         }
-        return null;
-      } catch (err) {
-        console.error("Erro ao acessar câmera:", err);
-        setCameraPermission('denied');
-        stopStream();
-        return null;
       }
-    })();
-
-    return Promise.race([capturePromise, timeoutPromise]);
+      return null;
+    } catch (err) {
+      console.error("Erro câmera:", err);
+      setCameraError("Acesso à câmera negado ou indisponível");
+      stopStream();
+      return null;
+    }
   };
 
   const getEmergencyText = () => {
@@ -130,6 +103,10 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     return `🚨 *SOS GUARD - EMERGÊNCIA* 🚨\n\n${settings.message}\n${medicalInfo}\n\n📍 *LOCALIZAÇÃO*:\n${googleMapsUrl}`;
   };
 
+  const handleActionComplete = () => {
+    setIsSuccess(true);
+  };
+
   const handleSendToGroup = async () => {
     if (!settings.groupLink) return;
     
@@ -139,23 +116,19 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     if (front) files.push(dataURLtoFile(front, 'selfie_sos.jpg'));
     if (back) files.push(dataURLtoFile(back, 'ambiente_sos.jpg'));
 
-    // Tentar o Share API primeiro (Melhor para Android anexar fotos)
     if (navigator.share && navigator.canShare && navigator.canShare({ files })) {
       try {
-        await navigator.share({
-          title: 'SOS GRUPO',
-          text: text,
-          files: files
-        });
+        await navigator.share({ title: 'SOS GRUPO', text: text, files: files });
+        handleActionComplete();
         return;
       } catch (e) {
-        console.warn("Share API falhou ou cancelado", e);
+        console.warn("Share falhou", e);
       }
     }
     
-    // Fallback: Link do grupo (WhatsApp Web/App)
     const groupUrl = `${settings.groupLink}${settings.groupLink.includes('?') ? '&' : '?'}text=${encodeURIComponent(text)}`;
-    window.location.href = groupUrl; // Usar location.href ao invés de window.open para WebViews
+    window.location.href = groupUrl;
+    setTimeout(handleActionComplete, 2000);
   };
 
   const handleSendFullEmergency = async (contact: EmergencyContact) => {
@@ -168,16 +141,10 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
 
     if (navigator.share && navigator.canShare && navigator.canShare({ files })) {
       try {
-        await navigator.share({
-          title: 'SOS EMERGÊNCIA',
-          text: text,
-          files: files
-        });
-        return;
+        await navigator.share({ title: 'SOS EMERGÊNCIA', text: text, files: files });
+        handleActionComplete();
       } catch (err) {
-        if ((err as Error).name !== 'AbortError') {
-          handleDirectWhatsApp(contact);
-        }
+        handleDirectWhatsApp(contact);
       }
     } else {
       handleDirectWhatsApp(contact);
@@ -187,31 +154,27 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
   const handleDirectWhatsApp = (contact: EmergencyContact) => {
     const phone = formatPhoneForWhatsApp(contact.phone);
     const text = encodeURIComponent(getEmergencyText());
-    
-    // Em Android WebView, links whatsapp:// funcionam melhor se o app estiver instalado
     const whatsappUrl = `whatsapp://send?phone=${phone}&text=${text}`;
     const fallbackUrl = `https://wa.me/${phone}?text=${text}`;
     
     try {
       window.location.href = whatsappUrl;
-      // Pequeno timeout para tentar o fallback caso o intent nativo não dispare
       setTimeout(() => {
-        if (document.hasFocus()) {
-          window.location.href = fallbackUrl;
-        }
-      }, 1500);
+        if (document.hasFocus()) window.location.href = fallbackUrl;
+      }, 500);
     } catch (e) {
       window.location.href = fallbackUrl;
     }
+    setTimeout(handleActionComplete, 2000);
   };
 
   const handleSMSFallback = (contact: EmergencyContact) => {
     const phone = contact.phone.replace(/\D/g, '');
     const text = getEmergencyText();
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const separator = isIOS ? '&' : '?';
-    const smsUri = `sms:${phone}${separator}body=${encodeURIComponent(text)}`;
+    const smsUri = `sms:${phone}${isIOS ? '&' : '?'}body=${encodeURIComponent(text)}`;
     window.location.href = smsUri;
+    setTimeout(handleActionComplete, 1000);
   };
 
   const handleSOS = async () => {
@@ -220,34 +183,61 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
       return;
     }
 
-    if (navigator.vibrate) navigator.vibrate([500, 100, 500, 100, 500]);
+    if (navigator.vibrate) navigator.vibrate([500, 100, 500]);
 
     setIsSending(true);
+    setCameraError(null);
     
     try {
-      setLastAction("Capturando sua imagem...");
+      setLastAction("Capturando sua selfie...");
       const front = await capturePhotoWithTimeout('user');
       setCapturedPhotos(prev => ({ ...prev, front }));
       
-      await new Promise(r => setTimeout(r, 800));
+      await new Promise(r => setTimeout(r, 500));
       
-      setLastAction("Registrando ambiente...");
+      setLastAction("Registrando o ambiente...");
       const back = await capturePhotoWithTimeout('environment');
       setCapturedPhotos(prev => ({ ...prev, back }));
     } catch (e) {
-      console.error("Erro durante captura:", e);
-      setLastAction("Erro ao capturar imagens.");
+      setLastAction("Erro ao capturar fotos");
     }
 
     setIsSending(false);
     setShowWhatsAppFollowup(true);
-    setLastAction("Pronto para enviar!");
+    setLastAction("Imagens processadas!");
+  };
+
+  const resetAll = () => {
+    setIsSuccess(false);
+    setShowWhatsAppFollowup(false);
+    setCapturedPhotos({ front: null, back: null });
+    setLastAction(null);
+    setCameraError(null);
   };
 
   return (
-    <div className="w-full flex flex-col items-center space-y-6 px-2 h-full">
+    <div className="w-full flex flex-col items-center space-y-6 px-2 h-full relative">
       <video ref={videoRef} className="hidden" playsInline muted></video>
       <canvas ref={canvasRef} className="hidden"></canvas>
+
+      {/* MODAL DE SUCESSO */}
+      {isSuccess && (
+        <div className="fixed inset-0 z-[100] bg-white flex flex-col items-center justify-center p-8 animate-slide-up text-center">
+          <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mb-6 animate-bounce">
+            <svg className="w-12 h-12 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path>
+            </svg>
+          </div>
+          <h2 className="text-3xl font-black text-slate-900 mb-2">ALERTA ENVIADO!</h2>
+          <p className="text-slate-500 font-medium mb-10">Sua localização e informações médicas foram encaminhadas com sucesso.</p>
+          <button 
+            onClick={resetAll}
+            className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl shadow-xl active:scale-95 uppercase tracking-widest"
+          >
+            Finalizar Ocorrência
+          </button>
+        </div>
+      )}
 
       {!showWhatsAppFollowup ? (
         <div className="relative flex flex-col items-center w-full justify-center flex-1 py-10">
@@ -269,7 +259,8 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
           >
             {isSending ? (
               <div className="flex flex-col items-center animate-pulse">
-                <span className="text-white text-xs font-black uppercase tracking-widest">Ativando Câmera...</span>
+                <span className="text-white text-xs font-black uppercase tracking-widest">{lastAction?.split(' ')[0] || 'Ativando...'}</span>
+                <span className="text-white/60 text-[10px] mt-2 font-bold">{lastAction}</span>
               </div>
             ) : (
               <>
@@ -282,55 +273,51 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
           <div className="mt-12 px-8 py-3 bg-white/70 backdrop-blur-md rounded-2xl border border-white shadow-sm">
             <p className="text-[11px] font-black text-black uppercase tracking-widest flex items-center gap-3">
               <span className={`w-3 h-3 rounded-full ${isSending ? 'bg-amber-500 animate-pulse' : (location.error ? 'bg-red-500' : 'bg-green-600')}`}></span>
-              {location.error ? "Erro de GPS" : (lastAction || "Monitoramento Ativo")}
+              {location.error ? "Aguardando GPS..." : (cameraError || lastAction || "Monitoramento Pronto")}
             </p>
           </div>
         </div>
       ) : (
         <div className="w-full space-y-5 animate-slide-up pb-10 overflow-y-auto no-scrollbar">
-          <div className="bg-red-600 p-6 rounded-[2.5rem] shadow-2xl text-center border-4 border-white relative overflow-hidden">
-            <h2 className="text-white font-black text-2xl italic uppercase tracking-tight relative z-10 leading-tight">SOLICITAR AJUDA AGORA</h2>
-            <p className="text-white/80 text-[10px] font-black mt-1 uppercase relative z-10 tracking-widest">Selecione o destino do alerta:</p>
+          <div className="bg-red-600 p-6 rounded-[2.5rem] shadow-2xl text-center border-4 border-white">
+            <h2 className="text-white font-black text-2xl italic uppercase tracking-tight leading-tight">SOLICITAR AJUDA</h2>
+            <p className="text-white/80 text-[10px] font-black mt-1 uppercase tracking-widest">Toque para abrir o aplicativo</p>
           </div>
 
           {settings.groupLink && (
-            <div className="bg-green-50 p-5 rounded-3xl shadow-lg border-2 border-green-200 animate-pulse-fast">
+            <div className="bg-green-50 p-5 rounded-3xl shadow-lg border-2 border-green-200">
                <button
                   onClick={handleSendToGroup}
-                  className="w-full flex items-center justify-center gap-4 py-6 bg-green-600 hover:bg-green-700 text-white rounded-2xl transition-all shadow-xl active:scale-95 border-b-8 border-green-800"
+                  className="w-full flex flex-col items-center justify-center py-6 bg-green-600 hover:bg-green-700 text-white rounded-2xl transition-all shadow-xl active:scale-95 border-b-8 border-green-800"
                 >
-                  <span className="font-black text-2xl uppercase tracking-tighter">ENVIAR PARA GRUPO</span>
+                  <span className="font-black text-2xl uppercase tracking-tighter">ENVIAR NO GRUPO</span>
+                  <span className="text-[9px] font-bold opacity-80 uppercase tracking-widest mt-1">Alerta Coletivo</span>
                 </button>
-                <p className="text-center text-[10px] text-green-900 font-black uppercase mt-3 tracking-widest">Alerte todos de uma só vez!</p>
             </div>
           )}
 
           <div className="bg-white p-5 rounded-3xl shadow-lg border border-slate-100 space-y-4">
-            <h3 className="text-[11px] font-black text-black uppercase tracking-widest text-center">Contatos Cadastrados</h3>
+            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Enviar Individualmente</h3>
             <div className="grid grid-cols-1 gap-4">
               {validContacts.map((contact, idx) => (
-                <div key={contact.id} className="p-4 bg-slate-50 border-2 border-slate-100 rounded-3xl space-y-3 shadow-sm">
-                  <div className="flex justify-between items-center px-1">
+                <div key={contact.id} className="p-4 bg-slate-50 border-2 border-slate-100 rounded-3xl space-y-3">
+                  <div className="flex justify-between items-center">
                     <span className="text-black font-black text-lg">{contact.name || `Contato ${idx + 1}`}</span>
-                    <span className="text-[9px] font-black text-slate-700 bg-white px-2 py-1 rounded-lg border border-slate-200 uppercase tracking-widest">PRIORIDADE</span>
                   </div>
                   
-                  <div className="space-y-3">
+                  <div className="grid grid-cols-1 gap-2">
                     <button
                       onClick={() => handleSendFullEmergency(contact)}
-                      className="w-full flex items-center justify-center gap-3 py-5 bg-green-500 hover:bg-green-600 text-white rounded-2xl transition-all shadow-lg active:scale-95 border-b-4 border-green-700"
+                      className="w-full py-4 bg-green-500 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-md active:scale-95 flex items-center justify-center gap-2"
                     >
-                      <span className="font-black text-2xl uppercase tracking-tighter">ENVIAR WHATSAPP</span>
+                      WhatsApp
                     </button>
-                    
-                    <div className="flex flex-col gap-1 items-center">
-                      <button 
-                        onClick={() => handleSMSFallback(contact)}
-                        className="text-[9px] text-slate-600 font-black uppercase tracking-widest hover:text-red-500 transition-colors py-2"
-                      >
-                        Enviar via SMS direto
-                      </button>
-                    </div>
+                    <button 
+                      onClick={() => handleSMSFallback(contact)}
+                      className="w-full py-3 text-[10px] text-slate-400 font-bold uppercase tracking-widest"
+                    >
+                      Enviar via SMS
+                    </button>
                   </div>
                 </div>
               ))}
@@ -338,33 +325,27 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
           </div>
 
           <div className="grid grid-cols-2 gap-3 px-1">
-            <div className="relative overflow-hidden rounded-2xl border-2 border-white shadow-lg h-40">
+            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-200 h-32 bg-slate-100">
               {capturedPhotos.front ? (
                 <img src={capturedPhotos.front} className="w-full h-full object-cover" alt="Selfie" />
               ) : (
-                <div className="w-full h-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-500 uppercase text-center p-2">Sem Foto (Verificar Permissões)</div>
+                <div className="w-full h-full flex items-center justify-center text-[8px] font-bold text-slate-400 uppercase text-center p-2">Selfie Indisponível</div>
               )}
-              <div className="absolute bottom-2 left-2 bg-black/70 backdrop-blur-md px-2 py-1 rounded-lg text-[9px] text-white font-black uppercase tracking-tighter">Sua Selfie</div>
             </div>
-            <div className="relative overflow-hidden rounded-2xl border-2 border-white shadow-lg h-40">
+            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-200 h-32 bg-slate-100">
               {capturedPhotos.back ? (
                 <img src={capturedPhotos.back} className="w-full h-full object-cover" alt="Ambiente" />
               ) : (
-                <div className="w-full h-full bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-500 uppercase text-center p-2">Sem Foto (Verificar Permissões)</div>
+                <div className="w-full h-full flex items-center justify-center text-[8px] font-bold text-slate-400 uppercase text-center p-2">Ambiente Indisponível</div>
               )}
-              <div className="absolute bottom-2 left-2 bg-black/70 backdrop-blur-md px-2 py-1 rounded-lg text-[9px] text-white font-black uppercase tracking-tighter">Ambiente</div>
             </div>
           </div>
 
           <button 
-            onClick={() => {
-              setShowWhatsAppFollowup(false);
-              setCapturedPhotos({ front: null, back: null });
-              setLastAction(null);
-            }}
-            className="w-full py-5 bg-slate-100 text-black font-black text-[10px] rounded-2xl uppercase tracking-[0.4em] active:scale-95 border border-slate-200"
+            onClick={resetAll}
+            className="w-full py-5 bg-slate-200 text-slate-600 font-black text-[10px] rounded-2xl uppercase tracking-[0.4em] active:scale-95"
           >
-            Encerrar Alerta
+            Cancelar Alerta
           </button>
         </div>
       )}
