@@ -12,6 +12,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
   const [lastAction, setLastAction] = useState<string | null>(null);
   const [showWhatsAppFollowup, setShowWhatsAppFollowup] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [hasSentIndividual, setHasSentIndividual] = useState(false);
   const [capturedPhotos, setCapturedPhotos] = useState<{front: string | null, back: string | null}>({ front: null, back: null });
   const [cameraError, setCameraError] = useState<string | null>(null);
   
@@ -68,7 +69,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
         });
         
         await videoRef.current.play();
-        await new Promise(r => setTimeout(r, 1000)); // Tempo para foco
+        await new Promise(r => setTimeout(r, 1000));
 
         const context = canvasRef.current.getContext('2d');
         if (context && videoRef.current) {
@@ -82,8 +83,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
       }
       return null;
     } catch (err) {
-      console.error("Erro câmera:", err);
-      setCameraError("Acesso à câmera negado ou indisponível");
+      setCameraError("Câmera indisponível");
       stopStream();
       return null;
     }
@@ -103,8 +103,13 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     return `🚨 *SOS GUARD - EMERGÊNCIA* 🚨\n\n${settings.message}\n${medicalInfo}\n\n📍 *LOCALIZAÇÃO*:\n${googleMapsUrl}`;
   };
 
-  const handleActionComplete = () => {
-    setIsSuccess(true);
+  const handleActionComplete = (isGroup: boolean = false) => {
+    if (isGroup) {
+      setIsSuccess(true);
+    } else {
+      setHasSentIndividual(true);
+      setLastAction("Envio realizado!");
+    }
   };
 
   const handleSendToGroup = async () => {
@@ -119,7 +124,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     if (navigator.share && navigator.canShare && navigator.canShare({ files })) {
       try {
         await navigator.share({ title: 'SOS GRUPO', text: text, files: files });
-        handleActionComplete();
+        handleActionComplete(true);
         return;
       } catch (e) {
         console.warn("Share falhou", e);
@@ -128,7 +133,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     
     const groupUrl = `${settings.groupLink}${settings.groupLink.includes('?') ? '&' : '?'}text=${encodeURIComponent(text)}`;
     window.location.href = groupUrl;
-    setTimeout(handleActionComplete, 2000);
+    setTimeout(() => handleActionComplete(true), 2000);
   };
 
   const handleSendFullEmergency = async (contact: EmergencyContact) => {
@@ -142,7 +147,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     if (navigator.share && navigator.canShare && navigator.canShare({ files })) {
       try {
         await navigator.share({ title: 'SOS EMERGÊNCIA', text: text, files: files });
-        handleActionComplete();
+        handleActionComplete(false);
       } catch (err) {
         handleDirectWhatsApp(contact);
       }
@@ -165,7 +170,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     } catch (e) {
       window.location.href = fallbackUrl;
     }
-    setTimeout(handleActionComplete, 2000);
+    setTimeout(() => handleActionComplete(false), 2000);
   };
 
   const handleSMSFallback = (contact: EmergencyContact) => {
@@ -174,12 +179,12 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     const smsUri = `sms:${phone}${isIOS ? '&' : '?'}body=${encodeURIComponent(text)}`;
     window.location.href = smsUri;
-    setTimeout(handleActionComplete, 1000);
+    setTimeout(() => handleActionComplete(false), 1000);
   };
 
   const handleSOS = async () => {
     if (validContacts.length === 0 && !settings.groupLink) {
-      alert("⚠️ Adicione contatos ou um link de grupo nos ajustes primeiro.");
+      alert("⚠️ Configure seus contatos primeiro.");
       return;
     }
 
@@ -187,32 +192,37 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
 
     setIsSending(true);
     setCameraError(null);
+    setHasSentIndividual(false);
     
     try {
-      setLastAction("Capturando sua selfie...");
+      setLastAction("Capturando selfie...");
       const front = await capturePhotoWithTimeout('user');
       setCapturedPhotos(prev => ({ ...prev, front }));
       
       await new Promise(r => setTimeout(r, 500));
       
-      setLastAction("Registrando o ambiente...");
+      setLastAction("Capturando ambiente...");
       const back = await capturePhotoWithTimeout('environment');
       setCapturedPhotos(prev => ({ ...prev, back }));
     } catch (e) {
-      setLastAction("Erro ao capturar fotos");
+      setLastAction("Erro na captura");
     }
 
     setIsSending(false);
     setShowWhatsAppFollowup(true);
-    setLastAction("Imagens processadas!");
   };
 
   const resetAll = () => {
     setIsSuccess(false);
     setShowWhatsAppFollowup(false);
+    setHasSentIndividual(false);
     setCapturedPhotos({ front: null, back: null });
     setLastAction(null);
     setCameraError(null);
+  };
+
+  const handleFinalFinish = () => {
+    setIsSuccess(true);
   };
 
   return (
@@ -220,7 +230,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
       <video ref={videoRef} className="hidden" playsInline muted></video>
       <canvas ref={canvasRef} className="hidden"></canvas>
 
-      {/* MODAL DE SUCESSO */}
+      {/* MODAL DE SUCESSO FINAL */}
       {isSuccess && (
         <div className="fixed inset-0 z-[100] bg-white flex flex-col items-center justify-center p-8 animate-slide-up text-center">
           <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mb-6 animate-bounce">
@@ -228,13 +238,13 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path>
             </svg>
           </div>
-          <h2 className="text-3xl font-black text-slate-900 mb-2">ALERTA ENVIADO!</h2>
-          <p className="text-slate-500 font-medium mb-10">Sua localização e informações médicas foram encaminhadas com sucesso.</p>
+          <h2 className="text-3xl font-black text-slate-900 mb-2 leading-tight">ALERTA ENVIADO COM SUCESSO!</h2>
+          <p className="text-slate-500 font-medium mb-10">Seus contatos foram notificados sobre a emergência.</p>
           <button 
             onClick={resetAll}
-            className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl shadow-xl active:scale-95 uppercase tracking-widest"
+            className="w-full bg-green-600 text-white font-black py-5 rounded-2xl shadow-xl active:scale-95 uppercase tracking-widest border-b-8 border-green-800"
           >
-            Finalizar Ocorrência
+            Finalizar Alerta
           </button>
         </div>
       )}
@@ -259,7 +269,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
           >
             {isSending ? (
               <div className="flex flex-col items-center animate-pulse">
-                <span className="text-white text-xs font-black uppercase tracking-widest">{lastAction?.split(' ')[0] || 'Ativando...'}</span>
+                <span className="text-white text-xs font-black uppercase tracking-widest">Processando...</span>
                 <span className="text-white/60 text-[10px] mt-2 font-bold">{lastAction}</span>
               </div>
             ) : (
@@ -273,15 +283,15 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
           <div className="mt-12 px-8 py-3 bg-white/70 backdrop-blur-md rounded-2xl border border-white shadow-sm">
             <p className="text-[11px] font-black text-black uppercase tracking-widest flex items-center gap-3">
               <span className={`w-3 h-3 rounded-full ${isSending ? 'bg-amber-500 animate-pulse' : (location.error ? 'bg-red-500' : 'bg-green-600')}`}></span>
-              {location.error ? "Aguardando GPS..." : (cameraError || lastAction || "Monitoramento Pronto")}
+              {location.error ? "Aguardando GPS..." : (cameraError || lastAction || "Sistema Pronto")}
             </p>
           </div>
         </div>
       ) : (
         <div className="w-full space-y-5 animate-slide-up pb-10 overflow-y-auto no-scrollbar">
           <div className="bg-red-600 p-6 rounded-[2.5rem] shadow-2xl text-center border-4 border-white">
-            <h2 className="text-white font-black text-2xl italic uppercase tracking-tight leading-tight">SOLICITAR AJUDA</h2>
-            <p className="text-white/80 text-[10px] font-black mt-1 uppercase tracking-widest">Toque para abrir o aplicativo</p>
+            <h2 className="text-white font-black text-2xl italic uppercase tracking-tight leading-tight">ENVIAR ALERTA</h2>
+            <p className="text-white/80 text-[10px] font-black mt-1 uppercase tracking-widest">Selecione os contatos abaixo</p>
           </div>
 
           {settings.groupLink && (
@@ -291,13 +301,13 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
                   className="w-full flex flex-col items-center justify-center py-6 bg-green-600 hover:bg-green-700 text-white rounded-2xl transition-all shadow-xl active:scale-95 border-b-8 border-green-800"
                 >
                   <span className="font-black text-2xl uppercase tracking-tighter">ENVIAR NO GRUPO</span>
-                  <span className="text-[9px] font-bold opacity-80 uppercase tracking-widest mt-1">Alerta Coletivo</span>
+                  <span className="text-[9px] font-bold opacity-80 uppercase tracking-widest mt-1">Alerta Instantâneo</span>
                 </button>
             </div>
           )}
 
           <div className="bg-white p-5 rounded-3xl shadow-lg border border-slate-100 space-y-4">
-            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Enviar Individualmente</h3>
+            <h3 className="text-[11px] font-black text-slate-400 uppercase tracking-widest text-center">Contatos Individuais</h3>
             <div className="grid grid-cols-1 gap-4">
               {validContacts.map((contact, idx) => (
                 <div key={contact.id} className="p-4 bg-slate-50 border-2 border-slate-100 rounded-3xl space-y-3">
@@ -308,7 +318,7 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
                   <div className="grid grid-cols-1 gap-2">
                     <button
                       onClick={() => handleSendFullEmergency(contact)}
-                      className="w-full py-4 bg-green-500 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-md active:scale-95 flex items-center justify-center gap-2"
+                      className="w-full py-4 bg-green-500 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-md active:scale-95 flex items-center justify-center gap-2 border-b-4 border-green-700"
                     >
                       WhatsApp
                     </button>
@@ -325,27 +335,32 @@ const PanicButton: React.FC<Props> = ({ location, settings }) => {
           </div>
 
           <div className="grid grid-cols-2 gap-3 px-1">
-            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-200 h-32 bg-slate-100">
+            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-200 h-32 bg-slate-100 shadow-inner">
               {capturedPhotos.front ? (
                 <img src={capturedPhotos.front} className="w-full h-full object-cover" alt="Selfie" />
               ) : (
-                <div className="w-full h-full flex items-center justify-center text-[8px] font-bold text-slate-400 uppercase text-center p-2">Selfie Indisponível</div>
+                <div className="w-full h-full flex items-center justify-center text-[8px] font-bold text-slate-400 uppercase text-center p-2">Sem Selfie</div>
               )}
             </div>
-            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-200 h-32 bg-slate-100">
+            <div className="relative overflow-hidden rounded-2xl border-2 border-slate-200 h-32 bg-slate-100 shadow-inner">
               {capturedPhotos.back ? (
                 <img src={capturedPhotos.back} className="w-full h-full object-cover" alt="Ambiente" />
               ) : (
-                <div className="w-full h-full flex items-center justify-center text-[8px] font-bold text-slate-400 uppercase text-center p-2">Ambiente Indisponível</div>
+                <div className="w-full h-full flex items-center justify-center text-[8px] font-bold text-slate-400 uppercase text-center p-2">Sem Ambiente</div>
               )}
             </div>
           </div>
 
+          {/* BOTÃO DE FINALIZAÇÃO CONDICIONAL */}
           <button 
-            onClick={resetAll}
-            className="w-full py-5 bg-slate-200 text-slate-600 font-black text-[10px] rounded-2xl uppercase tracking-[0.4em] active:scale-95"
+            onClick={hasSentIndividual ? handleFinalFinish : resetAll}
+            className={`w-full py-5 font-black text-[10px] rounded-2xl uppercase tracking-[0.4em] active:scale-95 transition-all duration-300 border-2 ${
+              hasSentIndividual 
+              ? 'bg-red-600 text-white border-white shadow-xl animate-pulse-fast' 
+              : 'bg-slate-200 text-slate-600 border-slate-300'
+            }`}
           >
-            Cancelar Alerta
+            {hasSentIndividual ? 'Concluir e Finalizar Alerta' : 'Cancelar Alerta'}
           </button>
         </div>
       )}
